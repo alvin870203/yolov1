@@ -96,8 +96,7 @@ match dataset_name:
         dataset_train = torchvision.datasets.ImageNet(
             data_dir, split='train',
             transform=transforms.Compose([
-                transforms.RandomResizedCrop(size=(img_h, img_w), scale=(scale_min, scale_max),
-                                             ratio=(1.0, 1.0), antialias=False),
+                transforms.RandomResizedCrop(size=(img_h, img_w), scale=(scale_min, scale_max), ratio=(1.0, 1.0)),
                 transforms.RandomHorizontalFlip(p=0.5),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=imgs_mean, std=imgs_std)
@@ -106,7 +105,7 @@ match dataset_name:
         dataset_val = torchvision.datasets.ImageNet(
             data_dir, split='val',
             transform=transforms.Compose([
-                transforms.Resize(size=(img_h, img_w), antialias=False),
+                transforms.Resize(size=(img_h, img_w)),
                 transforms.CenterCrop(size=(img_h, img_w)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=imgs_mean, std=imgs_std)
