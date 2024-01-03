@@ -11,7 +11,10 @@ img_w = 224
 n_class = 1000
 
 # Transform related
-max_crop = 320
+scale_min = 0.25  # not very sure how to set this to have the same effect as the darknet implementation
+scale_max = 1.0  # not very sure how to set this to have the same effect as the darknet implementation
+imgs_mean = [0.0, 0.0, 0.0]  # no normalization for yolo
+imgs_std = [1.0, 1.0, 1.0]  # no normalization for yolo
 
 # Model related
 model_name = 'extraction'
@@ -21,8 +24,8 @@ model_name = 'extraction'
 # 1,024 batch_size * 1 grad_accum = 1,024 imgs/iter
 # imagenet2012 train set has 1,281,167 imgs, so 1 epoch ~= 1,251 iters
 gradient_accumulation_steps = 1
-batch_size = 1024  # TODO: change after complete model
-max_iters = 1600000  # TODO
+batch_size = 1024  # filled up the gpu memory on my machine
+max_iters = 125100  # finish in 1 day on my machine
 
 # Optimizer related
 learning_rate = 1e-1  # max learning rate
@@ -31,15 +34,15 @@ beta1 = 0.9
 beta2 = 0.999
 grad_clip = 0.0  # clip gradients at this value, or disable if == 0.0
 decay_lr = True  # whether to decay the learning rate
-warmup_iters = 10000  # how many steps to warm up for  # TODO
-lr_decay_iters = 1600000  # should be ~= max_iters  # TODO
+warmup_iters = 6255  # warmup 5 epochs
+lr_decay_iters = 125100  # should be ~= max_iters
 min_lr = 1e-2  # minimum learning rate, should be ~= learning_rate/10
 use_fused = True  # somehow use_fused=True is incompatible to compile=True in this model
 
 # Eval related
 # imagenet2012 val set has 50,000 imgs, so 1 epoch ~= 48 iters
-eval_interval = 1000  # keep frequent if we'll overfit  # TODO
-eval_iters = 2  # use more iterations to get good estimate  # TODO
+eval_interval = 2502  # keep frequent if we'll overfit
+eval_iters = 2  # use more iterations to get good estimate
 
 # Log related
 timestamp = time.strftime('%Y%m%d-%H%M%S', time.localtime())
@@ -47,9 +50,9 @@ out_dir = f'out/extraction_imagenet2012/{timestamp}'
 wandb_log = True
 wandb_project = 'imagenet2012'
 wandb_run_name = f'extraction_{timestamp}'
-log_interval = 200  # don't print too often  # TODO
+log_interval = 200  # don't print too often
 always_save_checkpoint = False  # only save when val improves if we expect overfit
 
 # System related
 compile = False  # somehow use_fused=True is incompatible to compile=True in this model
-n_worker = 3
+n_worker = 4

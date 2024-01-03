@@ -14,6 +14,8 @@ import numpy as np
 import torch
 from torch.utils.data.dataloader import DataLoader
 import torchvision
+from torchvision import transforms
+from torchvision.transforms import v2  # not used, v2 is somehow slower in this case
 from tqdm import tqdm
 
 
@@ -29,9 +31,10 @@ img_h = 224
 img_w = 224
 n_class = 1000
 # Transform related
+scale_min = 0.25
+scale_max = 1.0
 imgs_mean = (0.485, 0.456, 0.406)
 imgs_std = (0.229, 0.224, 0.225)
-max_crop = 320
 # Model related
 model_name = 'extraction'
 # Train related
@@ -90,22 +93,23 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 data_dir = os.path.join('data', dataset_name)
 match dataset_name:
     case 'imagenet2012':
-        # TODO: add v2 transforms for torchvision dataset
         dataset_train = torchvision.datasets.ImageNet(
             data_dir, split='train',
-            transform=torchvision.transforms.Compose([
-                torchvision.transforms.RandomResizedCrop((img_h, img_w), scale=(0.08, 1.0), ratio=(0.75, 1.3333333333333333)),
-                torchvision.transforms.RandomHorizontalFlip(),
-                torchvision.transforms.ToTensor(),
-                torchvision.transforms.Normalize(mean=imgs_mean, std=imgs_std)
+            transform=transforms.Compose([
+                transforms.RandomResizedCrop(size=(img_h, img_w), scale=(scale_min, scale_max),
+                                             ratio=(1.0, 1.0), antialias=False),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=imgs_mean, std=imgs_std)
             ])
         )
         dataset_val = torchvision.datasets.ImageNet(
             data_dir, split='val',
-            transform=torchvision.transforms.Compose([
-                torchvision.transforms.Resize((img_h, img_w)),
-                torchvision.transforms.ToTensor(),
-                torchvision.transforms.Normalize(mean=imgs_mean, std=imgs_std)
+            transform=transforms.Compose([
+                transforms.Resize(size=(img_h, img_w), antialias=False),
+                transforms.CenterCrop(size=(img_h, img_w)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=imgs_mean, std=imgs_std)
             ])
         )
         dataloader_train = DataLoader(dataset_train, batch_size=batch_size, shuffle=True,
@@ -116,6 +120,28 @@ match dataset_name:
         print(f"val dataset: {len(dataset_val)} samples, {len(dataloader_val)} batches")
     case _:
         raise ValueError(f"dataset_name: {dataset_name} not supported")
+
+class BatchGetter:
+    assert len(dataloader_train) >= eval_iters, f"Not enough batches in train loader for eval."
+    assert len(dataloader_val) >= eval_iters, f"Not enough batches in val loader for eval."
+    dataiter = {'train': iter(dataloader_train), 'val': iter(dataloader_val)}
+
+    @classmethod
+    def get_batch(cls, split):
+        try:
+            X, Y = next(cls.dataiter[split])
+        except StopIteration:
+            cls.dataiter[split] = iter(dataloader_train) if split == 'train' else iter(dataloader_val)
+            X, Y = next(cls.dataiter[split])
+
+        if device_type == 'cuda':
+            # X, Y is pinned in dataloader, which allows us to move them to GPU asynchronously (non_blocking=True)
+            X = X.to(device, non_blocking=True)
+            Y = Y.to(device, non_blocking=True)
+        else:
+            X, Y = X.to(device), Y.to(device)
+
+        return X, Y
 
 
 # Init these up here, can override if init_from='resume' (i.e. from a checkpoint)
@@ -194,20 +220,13 @@ if compile:
 def estimate_loss():
     out = {}
     model.eval()
-    for split, loader in zip(['train', 'val'], [dataloader_train, dataloader_val]):
-        assert len(loader) >= eval_iters, f"Not enough batches in {split} loader"
+    for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
-        dataiter = iter(loader)
-        X, Y = next(dataiter)
-        for K in range(eval_iters):
-            if device_type == 'cuda':
-                X = X.to(device, non_blocking=True)
-                Y = Y.to(device, non_blocking=True)
-            else:
-                X, Y = X.to(device), Y.to(device)
+        for k in range(eval_iters):
+            X, Y = BatchGetter.get_batch(split)
             with ctx:
                 logits, loss = model(X, Y)
-            losses[K] = loss.item()
+            losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
     return out
@@ -235,14 +254,7 @@ if wandb_log:
 
 
 # Training loop
-dataiter_train = iter(dataloader_train)
-X, Y = next(dataiter_train)  # fetch the very first batch
-if device_type == 'cuda':
-    X = X.to(device, non_blocking=True)
-    Y = Y.to(device, non_blocking=True)
-else:
-    X, Y = X.to(device), Y.to(device)
-
+X, Y = BatchGetter.get_batch('train')  # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0  # number of iterations in the lifetime of this process
 pbar = tqdm(total=max_iters, initial=iter_num, dynamic_ncols=True)
@@ -291,17 +303,7 @@ while True:
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
 
         # Immediately async prefetch next batch while model is doing the forward pass on the GPU
-        # and re-init iterator if needed
-        try:
-            X, Y = next(dataiter_train)
-        except StopIteration:
-            dataiter_train = iter(dataloader_train)
-            X, Y = next(dataiter_train)
-        if device_type == 'cuda':
-            X = X.to(device, non_blocking=True)
-            Y = Y.to(device, non_blocking=True)
-        else:
-            X, Y = X.to(device), Y.to(device)
+        X, Y = BatchGetter.get_batch('train')
 
         # Backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
