@@ -218,18 +218,30 @@ if compile:
 # Helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
 def estimate_loss():
-    out = {}
+    out_losses = {}
+    out_acc1 = {}
+    out_acc5 = {}
     model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
+        acc1 = torch.zeros(eval_iters)
+        acc5 = torch.zeros(eval_iters)
         for k in range(eval_iters):
             X, Y = BatchGetter.get_batch(split)
             with ctx:
                 logits, loss = model(X, Y)
             losses[k] = loss.item()
-        out[split] = losses.mean()
+            _, pred = logits.topk(5, 1, True, True)
+            pred = pred.t()
+            correct = pred.eq(Y.view(1, -1).expand_as(pred))
+            batch_size = X.size(0)
+            acc1[k] = correct[:1].reshape(-1).float().sum(0).mul_(100.0 / batch_size).item()
+            acc5[k] = correct[:5].reshape(-1).float().sum(0).mul_(100.0 / batch_size).item()
+        out_losses[split] = losses.mean()
+        out_acc1[split] = acc1.mean()
+        out_acc5[split] = acc5.mean()
     model.train()
-    return out
+    return out_losses, out_acc1, out_acc5
 
 
 # Learning rate decay scheduler (cosine with warmup)
@@ -268,13 +280,17 @@ while True:
 
     # Evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0:
-        losses = estimate_loss()
-        tqdm.write(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        losses, acc1, acc5 = estimate_loss()
+        tqdm.write(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, val top1 acc {acc1['val']:.2f}%, val top5 acc {acc5['val']:.2f}%")
         if wandb_log:
             wandb.log({
                 "iter": iter_num,
                 "train/loss": losses['train'],
+                "train/acc1": acc1['train'],
+                "train/acc5": acc5['train'],
                 "val/loss": losses['val'],
+                "val/acc1": acc1['val'],
+                "val/acc5": acc5['val'],
                 "lr": lr
             })
 
