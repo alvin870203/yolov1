@@ -4,7 +4,7 @@ import time
 # Task related
 task_name = 'classify'
 init_from = 'resume'
-resume_dir = 'out/extraction_imagenet2012/20240103-160048'
+from_dir = 'out/extraction_imagenet2012/20240103-160048'
 
 # Data related
 dataset_name = 'imagenet2012'

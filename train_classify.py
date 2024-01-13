@@ -25,7 +25,7 @@ from tqdm import tqdm
 task_name = 'classify'
 eval_only = False  # if True, script exits right after the first eval
 init_from = 'scratch'  # 'scratch' or 'resume' or 'pretrained(FUTURE)'
-resume_dir = None  # only used when init_from='resume'
+from_dir = None  # only used when init_from='resume'
 # Data related
 dataset_name = 'imagenet2012'
 img_h = 224
@@ -151,12 +151,12 @@ best_val_loss = 1e9
 
 # Model init
 if init_from == 'scratch':
-    # init a new model from scratch
+    # Init a new model from scratch
     print(f"Initializing a new {model_name} model from scratch")
 elif init_from == 'resume':
-    print(f"Resuming training {model_name} from {resume_dir}")
-    # resume training from a checkpoint.
-    ckpt_path = os.path.join(resume_dir, 'ckpt.pt')
+    print(f"Resuming training {model_name} from {from_dir}")
+    # Resume training from a checkpoint.
+    ckpt_path = os.path.join(from_dir, 'ckpt.pt')
     checkpoint = torch.load(ckpt_path, map_location=device)
     checkpoint_model_args = checkpoint['model_args']
     assert model_name == checkpoint['config']['model_name'], "model_name mismatch"
