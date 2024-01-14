@@ -173,8 +173,8 @@ class Extraction(nn.Module):
             imgs (Tensor): size(N, 3, img_h, img_w)
             targets (Tensor): size(N, n_class)
         Returns:
-            logits (Tensor): (N, n_class)
-            loss (Tensor): (,)
+            logits (Tensor): size(N,)
+            loss (Tensor): size(,)
         """
         device = imgs.device
 
@@ -213,7 +213,6 @@ class Extraction(nn.Module):
         #   nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
         decay_params = [p for n, p in param_dict.items()]
         nodecay_params = []
-
 
         optim_groups = [
             {'params': decay_params, 'weight_decay': weight_decay},
@@ -255,7 +254,7 @@ class Extraction(nn.Module):
 
 
 if __name__ == '__main__':
-    # Test the model
+    # Test the model by `python -m model.extraction` from the workspace directory
     config = ExtractionConfig()
     # config = ExtractionConfig(img_h=448, img_w=448)
     model = Extraction(config)
