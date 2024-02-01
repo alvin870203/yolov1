@@ -205,15 +205,10 @@ class Extraction(nn.Module):
         # Filter out those that do not require grad
         param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
 
-        # Create optim groups.
-        # Example:
-        #   # To make any parameters that is 2D will be weight decayed, otherwise no.
-        #   # i.e. all weight tensors in matmuls decay, all biases and norms don't.
-        #   decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
-        #   nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
-        decay_params = [p for n, p in param_dict.items()]
-        nodecay_params = []
-
+        # Create optim groups. any parameters that is 2D will be weight decayed, otherwise no.
+        # i.e. all weight tensors in matmuls decay, all biases and norms don't.
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
         optim_groups = [
             {'params': decay_params, 'weight_decay': weight_decay},
             {'params': nodecay_params, 'weight_decay': 0.0}

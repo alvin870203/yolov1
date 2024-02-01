@@ -1,8 +1,9 @@
 """
-Training script for a classifier.
+Training script for a detector.
 To run, example:
-$ python train_classify.py config/train_extraction_imagenet2012.py --n_worker=1
+$ python train_detect.py config/train_yolov1_voc.py --n_worker=1
 """
+
 
 import os
 import time
@@ -12,57 +13,77 @@ from contextlib import nullcontext
 
 import numpy as np
 import torch
+import torch.nn as nn
+from torch.utils.data import ConcatDataset
 from torch.utils.data.dataloader import DataLoader
 import torchvision
-from torchvision import transforms
-from torchvision.transforms import v2  # not used, v2 is somehow slower in this case
+from torchvision import tv_tensors
+from torchvision.transforms import v2
+from torchvision.ops import box_convert
+from torchvision.datasets import wrap_dataset_for_transforms_v2
 from tqdm import tqdm
+from torchmetrics.detection import MeanAveragePrecision
 
 
 # -----------------------------------------------------------------------------
 # Default config values
 # Task related
-task_name = 'classify'
+task_name = 'detect'
 eval_only = False  # if True, script exits right after the first eval
-init_from = 'scratch'  # 'scratch' or 'resume' or 'pretrained(FUTURE)'
-from_ckpt = None  # only used when init_from='resume'
+init_from = 'scratch'  # 'scratch' or 'resume' or 'backbone' or 'pretrained(FUTURE)'
+from_ckpt = ''  # only used when init_from='resume' or 'backbone'
 # Data related
-dataset_name = 'imagenet2012'
-img_h = 224
-img_w = 224
-n_class = 1000
+dataset_name = 'voc'
+img_h = 448
+img_w = 448
+n_class = 20
 # Transform related
-scale_min = 0.25
-scale_max = 1.0
+scale_min = 0.44
+scale_max = 1.44
+aspect_min = 0.5
+aspect_max = 2.0
+brightness = 0.5
+contrast = 0.0
+saturation = 0.5
+hue = 0.1
 imgs_mean = (0.485, 0.456, 0.406)
 imgs_std = (0.229, 0.224, 0.225)
 # Model related
-model_name = 'extraction'
+model_name = 'yolov1'
+n_bbox_per_cell = 2  # B in the paper
+n_grid_h = 7  # S in the paper
+n_grid_w = 7  # S in the paper
+# Loss related
+lambda_coord = 5.0
+lambda_noobj = 0.5
 # Train related
 gradient_accumulation_steps = 1  # used to simulate larger batch sizes
 batch_size = 2  # if gradient_accumulation_steps > 1, this is the micro-batch size
-max_iters = 100000  # total number of training iterations
+max_iters = 100  # total number of training iterations
 # Optimizer related
+optimizer_type = 'adamw'  # 'adamw' or 'sgd'
 learning_rate = 1e-3  # max learning rate
 weight_decay = 1e-2
-beta1 = 0.9
+beta1 = 0.9  # beta1 for adamw, momentum for sgd
 beta2 = 0.999
 grad_clip = 0.0  # clip gradients at this value, or disable if == 0.0
 decay_lr = True  # whether to decay the learning rate
-warmup_iters = 5000  # how many steps to warm up for
-lr_decay_iters = 100000  # should be ~= max_iters
+warmup_iters = 10  # how many steps to warm up for
+lr_decay_iters = 100  # should be ~= max_iters
 min_lr = 1e-4  # minimum learning rate, should be ~= learning_rate/10
 use_fused = True  # whether to use fused optimizer kernel
 # Eval related
-eval_interval = 100  # keep frequent if we'll overfit
-eval_iters = 200  # use more iterations to get good estimate
+eval_interval = 5  # keep frequent if we'll overfit
+eval_iters = 2  # use more iterations to get good estimate
+prob_thresh = 0.001  # threshold for predicted class-specific confidence score (= obj_prob * class_prob)
+iou_thresh = 0.5  # for NMS
 # Log related
 timestamp = '00000000-000000'
-out_dir = f'out/extraction_imagenet2012/{timestamp}'
+out_dir = f'out/yolov1_voc/{timestamp}'
 wandb_log = False  # disabled by default
-wandb_project = 'imagenet2012'
-wandb_run_name = f'extraction_{timestamp}'
-log_interval = 50  # don't print too often
+wandb_project = 'voc'
+wandb_run_name = f'yolov1_{timestamp}'
+log_interval = 2  # don't print too often
 always_save_checkpoint = False  # if True, always save a checkpoint after each eval
 # System related
 device = 'cuda'  # example: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
@@ -90,38 +111,80 @@ ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torc
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
 
+# Collate function for object detection
+def collate_fn(batch):
+    xs, ys, y_supps = [], [], []
+    for x, y, y_supp in batch:
+        xs.append(x)
+        ys.append(y)
+        y_supps.append(y_supp)
+    return torch.stack(xs), torch.stack(ys), y_supps
+
 # Dataloader
 data_dir = os.path.join('data', dataset_name)
 match dataset_name:
-    case 'imagenet2012':
-        dataset_train = torchvision.datasets.ImageNet(
-            data_dir, split='train',
-            transform=transforms.Compose([
-                transforms.RandomResizedCrop(size=(img_h, img_w), scale=(scale_min, scale_max), ratio=(1.0, 1.0)),
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=imgs_mean, std=imgs_std)
-            ])
-        )
-        dataset_val = torchvision.datasets.ImageNet(
-            data_dir, split='val',
-            transform=transforms.Compose([
-                transforms.Resize(size=(img_h, img_w)),
-                transforms.CenterCrop(size=(img_h, img_w)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=imgs_mean, std=imgs_std)
-            ])
-        )
+    case 'voc':
+        from torchvision.datasets import VOCDetection
+        class Voc2Yolov1(nn.Module):
+            def forward(self, x, y_voc):
+                boxes_yolov1 = y_voc['boxes'].clone()
+                # Transform the bounding boxes from xyxy to cxcywh normalized by the image size
+                boxes_yolov1 = box_convert(boxes_yolov1, in_fmt='xyxy', out_fmt='cxcywh')
+                boxes_yolov1[:, [0, 2]] /= img_w
+                boxes_yolov1[:, [1, 3]] /= img_h
+                # Randomly shuffle the bounding boxes and labels, since only one object can be assigned to a grid cell
+                idx = torch.randperm(len(boxes_yolov1))
+                y_voc['boxes'] = y_voc['boxes'][idx]
+                boxes_yolov1 = boxes_yolov1[idx]
+                y_voc['labels'] = y_voc['labels'][idx] - 1  # remove background class
+                y_yolov1 = torch.zeros((n_grid_h, n_grid_w, 1 + 1 + 4), dtype=torch.float32)
+                cx_yolov1, cy_yolov1, w_yolov1, h_yolov1 = torch.unbind(boxes_yolov1, dim=1)
+                grid_x = torch.clamp_max(torch.floor(cx_yolov1 * n_grid_w), (n_grid_w - 1)).to(torch.int64)
+                grid_y = torch.clamp_max(torch.floor(cy_yolov1 * n_grid_h), (n_grid_h - 1)).to(torch.int64)
+                y_yolov1[grid_y, grid_x, 0] = 1.0  # set the is_obj to 1.0
+                y_yolov1[grid_y, grid_x, 1] = y_voc['labels'].to(torch.float32)  # set the class index to label
+                # Set the bbox coordinates, x,y are normalized by the grid size
+                y_yolov1[grid_y, grid_x, 2] = cx_yolov1 * n_grid_w - grid_x
+                y_yolov1[grid_y, grid_x, 3] = cy_yolov1 * n_grid_h - grid_y
+                y_yolov1[grid_y, grid_x, 4] = torch.sqrt(w_yolov1)
+                y_yolov1[grid_y, grid_x, 5] = torch.sqrt(h_yolov1)
+                return x, y_yolov1, y_voc
+
+        transforms_train = v2.Compose([
+            v2.ToImage(),
+            v2.RandomZoomOut(fill={tv_tensors.Image: (0, 0, 0), "others": 0}, side_range=(1.0, scale_max)),
+            v2.RandomIoUCrop(min_scale=scale_min, max_scale=1.0, min_aspect_ratio=0.5, max_aspect_ratio=2.0),
+            v2.ColorJitter(brightness=brightness, contrast=contrast, saturation=saturation, hue=hue),
+            v2.RandomHorizontalFlip(p=0.5),
+            v2.Resize(size=(img_h, img_w), antialias=True),
+            v2.SanitizeBoundingBoxes(),
+            v2.ToDtype(torch.float32, scale=True),
+            Voc2Yolov1(),
+        ])
+        transforms_val = v2.Compose([
+            v2.ToImage(),
+            v2.Resize(size=(img_h, img_w), antialias=True),
+            v2.SanitizeBoundingBoxes(),
+            v2.ToDtype(torch.float32, scale=True),
+            Voc2Yolov1(),
+        ])
+        dataset_2007_trainval = VOCDetection(data_dir, year='2007', image_set='trainval', transforms=transforms_train)
+        dataset_2012_trainval = VOCDetection(data_dir, year='2012', image_set='trainval', transforms=transforms_train)
+        dataset_2007_trainval = wrap_dataset_for_transforms_v2(dataset_2007_trainval, target_keys=['boxes', 'labels'])
+        dataset_2012_trainval = wrap_dataset_for_transforms_v2(dataset_2012_trainval, target_keys=['boxes', 'labels'])
+        dataset_train = ConcatDataset([dataset_2007_trainval, dataset_2012_trainval])
+        dataset_val = VOCDetection(data_dir, year='2007', image_set='test', transforms=transforms_val)
+        dataset_val = wrap_dataset_for_transforms_v2(dataset_val, target_keys=['boxes', 'labels'])
         dataloader_train = DataLoader(dataset_train, batch_size=batch_size, shuffle=True,
-                                      num_workers=n_worker, pin_memory=True)
+                                      num_workers=n_worker, pin_memory=True, collate_fn=collate_fn)
         dataloader_val = DataLoader(dataset_val, batch_size=batch_size, shuffle=True,  # shuffle since eval on only partial data
-                                    num_workers=n_worker, pin_memory=True)
+                                    num_workers=n_worker, pin_memory=True, collate_fn=collate_fn)
         print(f"train dataset: {len(dataset_train)} samples, {len(dataloader_train)} batches")
         print(f"val dataset: {len(dataset_val)} samples, {len(dataloader_val)} batches")
     case _:
         raise ValueError(f"dataset_name: {dataset_name} not supported")
 
-class BatchGetter:
+class BatchGetter:  # FIXME: why loss explode at specific epochs? but total avg loss is actually normal? because momentum of adamw?
     assert len(dataloader_train) >= eval_iters, f"Not enough batches in train loader for eval."
     assert len(dataloader_val) >= eval_iters, f"Not enough batches in val loader for eval."
     dataiter = {'train': iter(dataloader_train), 'val': iter(dataloader_val)}
@@ -129,10 +192,10 @@ class BatchGetter:
     @classmethod
     def get_batch(cls, split):
         try:
-            X, Y = next(cls.dataiter[split])
+            X, Y, Y_supp = next(cls.dataiter[split])
         except StopIteration:
             cls.dataiter[split] = iter(dataloader_train) if split == 'train' else iter(dataloader_val)
-            X, Y = next(cls.dataiter[split])
+            X, Y, Y_supp = next(cls.dataiter[split])
 
         if device_type == 'cuda':
             # X, Y is pinned in dataloader, which allows us to move them to GPU asynchronously (non_blocking=True)
@@ -141,7 +204,7 @@ class BatchGetter:
         else:
             X, Y = X.to(device), Y.to(device)
 
-        return X, Y
+        return X, Y, Y_supp
 
 
 # Init these up here, can override if init_from='resume' (i.e. from a checkpoint)
@@ -161,24 +224,35 @@ elif init_from == 'resume':
     checkpoint_model_args = checkpoint['model_args']
     assert model_name == checkpoint['config']['model_name'], "model_name mismatch"
     assert dataset_name == checkpoint['config']['dataset_name'], "dataset_name mismatch"
+elif init_from == 'backbone':
+    print(f"Initializing a {model_name} model with pretrained backbone weights: {from_ckpt}")
+    # Init a new model with pretrained backbone weights
+    checkpoint = torch.load(from_ckpt, map_location=device)
 else:
     pass  # FUTURE: init from pretrained
 
 match model_name:
-    case 'extraction':
-        from model.extraction import ExtractionConfig, Extraction
+    case 'yolov1':
+        from model.yolov1 import Yolov1Config, Yolov1
         model_args = dict(
             img_h=img_h,
             img_w=img_w,
-            n_class=n_class)  # start with model_args from command line
+            n_class=n_class,
+            n_bbox_per_cell=n_bbox_per_cell,
+            n_grid_h=n_grid_h,
+            n_grid_w=n_grid_w,
+            lambda_coord=lambda_coord,
+            lambda_noobj=lambda_noobj,
+            prob_thresh=prob_thresh,
+            iou_thresh=iou_thresh)  # start with model_args from command line
         if init_from == 'resume':
             # Force these config attributes to be equal otherwise we can't even resume training
             # the rest of the attributes (e.g. dropout) can stay as desired from command line
-            for k in ['img_h', 'img_w', 'n_class']:
+            for k in ['img_h', 'img_w', 'n_class', 'n_bbox_per_cell', 'n_grid_h', 'n_grid_w']:
                 model_args[k] = checkpoint_model_args[k]
         # Create the model
-        model_config = ExtractionConfig(**model_args)
-        model = Extraction(model_config)
+        model_config = Yolov1Config(**model_args)
+        model = Yolov1(model_config)
     case _:
         raise ValueError(f"model_name: {model_name} not supported")
 
@@ -193,6 +267,15 @@ if init_from == 'resume':
     model.load_state_dict(state_dict)
     iter_num = checkpoint['iter_num']
     best_val_loss = checkpoint['best_val_loss']
+elif init_from == 'backbone':
+    state_dict = checkpoint['model']
+    wanted_prefix = 'backbone.'
+    for k,v in list(state_dict.items()):
+        if not k.startswith(wanted_prefix):
+            state_dict.pop(k)
+        else:
+            state_dict[k[len(wanted_prefix):]] = state_dict.pop(k)
+    model.backbone.load_state_dict(state_dict)
 
 model.to(device)
 
@@ -202,7 +285,7 @@ scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 
 # Optimizer
-optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type, use_fused)
+optimizer = model.configure_optimizers(optimizer_type, weight_decay, learning_rate, (beta1, beta2), device_type, use_fused)
 if init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])
 checkpoint = None  # free up memory
@@ -216,32 +299,26 @@ if compile:
 
 
 # Helps estimate an arbitrarily accurate loss over either split using many batches
-@torch.no_grad()
+@torch.inference_mode()
 def estimate_loss():
-    out_losses = {}
-    out_acc1 = {}
-    out_acc5 = {}
+    out_losses, out_map50 = {}, {}
     model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
-        acc1 = torch.zeros(eval_iters)
-        acc5 = torch.zeros(eval_iters)
+        metric = MeanAveragePrecision(iou_type='bbox')
+        metric.warn_on_many_detections = False
         for k in range(eval_iters):
-            X, Y = BatchGetter.get_batch(split)
+            X, Y, Y_supp = BatchGetter.get_batch(split)
             with ctx:
                 logits, loss = model(X, Y)
             losses[k] = loss.item()
-            _, pred = logits.topk(5, 1, True, True)
-            pred = pred.t()
-            correct = pred.eq(Y.view(1, -1).expand_as(pred))
-            batch_size = X.size(0)
-            acc1[k] = correct[:1].reshape(-1).float().sum(0).mul_(100.0 / batch_size).item()
-            acc5[k] = correct[:5].reshape(-1).float().sum(0).mul_(100.0 / batch_size).item()
+            preds_for_map, targets_for_map = model.postprocess_for_map(logits, Y_supp)
+            metric.update(preds_for_map, targets_for_map)
+        map50 = metric.compute()['map_50'].mul(100.0).item()
         out_losses[split] = losses.mean()
-        out_acc1[split] = acc1.mean()
-        out_acc5[split] = acc5.mean()
+        out_map50[split] = map50
     model.train()
-    return out_losses, out_acc1, out_acc5
+    return out_losses, out_map50
 
 
 # Learning rate decay scheduler (cosine with warmup)
@@ -266,7 +343,7 @@ if wandb_log:
 
 
 # Training loop
-X, Y = BatchGetter.get_batch('train')  # fetch the very first batch
+X, Y, Y_supp = BatchGetter.get_batch('train')  # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0  # number of iterations in the lifetime of this process
 pbar = tqdm(total=max_iters, initial=iter_num, dynamic_ncols=True)
@@ -280,22 +357,20 @@ while True:
 
     # Evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0:
-        losses, acc1, acc5 = estimate_loss()
-        tqdm.write(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, val top1 acc {acc1['val']:.2f}%, val top5 acc {acc5['val']:.2f}%")
+        losses, map50 = estimate_loss()
+        tqdm.write(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, val map50 {map50['val']:.4f}")
         if wandb_log:
             wandb.log({
                 "iter": iter_num,
                 "train/loss": losses['train'],
-                "train/acc1": acc1['train'],
-                "train/acc5": acc5['train'],
+                "train/map50": map50['train'],
                 "val/loss": losses['val'],
-                "val/acc1": acc1['val'],
-                "val/acc5": acc5['val'],
+                "val/map50": map50['val'],
                 "lr": lr
             })
 
         is_last_eval = iter_num + eval_interval > max_iters
-        if losses['val'] < best_val_loss or always_save_checkpoint:
+        if losses['val'] < best_val_loss or always_save_checkpoint or is_last_eval:
             best_val_loss = losses['val']
             checkpoint = {
                 'model': model.state_dict(),
@@ -308,7 +383,7 @@ while True:
             }
             if iter_num > 0:
                 tqdm.write(f"saving checkpoint to {out_dir}")
-                torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))  # TODO: save top k or all checkpoints
+                torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))  # TODO: save top k checkpoints
             if is_last_eval:
                 tqdm.write(f"saving last checkpoint to {out_dir}")
                 torch.save(checkpoint, os.path.join(out_dir, 'ckpt_last.pt'))
@@ -324,7 +399,7 @@ while True:
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
 
         # Immediately async prefetch next batch while model is doing the forward pass on the GPU
-        X, Y = BatchGetter.get_batch('train')
+        X, Y, Y_supp = BatchGetter.get_batch('train')
 
         # Backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()

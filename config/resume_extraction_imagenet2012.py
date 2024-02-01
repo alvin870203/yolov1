@@ -4,7 +4,7 @@ import time
 # Task related
 task_name = 'classify'
 init_from = 'resume'
-from_dir = 'out/extraction_imagenet2012/20240103-160048'
+from_ckpt = 'out/extraction_imagenet2012/20240103-160048/ckpt.pt'
 
 # Data related
 dataset_name = 'imagenet2012'
@@ -30,7 +30,7 @@ batch_size = 1024  # filled up the gpu memory on my machine
 max_iters = 125100+37530  # resume from 125100 and train for 30 epochs more
 
 # Optimizer related
-learning_rate = 1e-1  # max learning rate
+learning_rate = 1e-3  # max learning rate
 weight_decay = 5e-4
 beta1 = 0.9
 beta2 = 0.999
@@ -38,7 +38,7 @@ grad_clip = 0.0  # clip gradients at this value, or disable if == 0.0
 decay_lr = True  # whether to decay the learning rate
 warmup_iters = 6255  # warmup 5 epochs
 lr_decay_iters = 125100  # should be ~= max_iters
-min_lr = 1e-2  # minimum learning rate, should be ~= learning_rate/10
+min_lr = 1e-4  # minimum learning rate, should be ~= learning_rate/10
 use_fused = True  # somehow use_fused=True is incompatible to compile=True in this model
 
 # Eval related
