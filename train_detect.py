@@ -56,6 +56,8 @@ n_grid_w = 7  # S in the paper
 # Loss related
 lambda_coord = 5.0
 lambda_noobj = 0.5
+iou_type = 'default'  # 'default' or 'distance'
+rescore = False  # whether to use predicted iou as ground truth for the predicted conf
 # Train related
 gradient_accumulation_steps = 1  # used to simulate larger batch sizes
 batch_size = 2  # if gradient_accumulation_steps > 1, this is the micro-batch size
@@ -176,9 +178,9 @@ match dataset_name:
         dataset_val = VOCDetection(data_dir, year='2007', image_set='test', transforms=transforms_val)
         dataset_val = wrap_dataset_for_transforms_v2(dataset_val, target_keys=['boxes', 'labels'])
         dataloader_train = DataLoader(dataset_train, batch_size=batch_size, shuffle=True,
-                                      num_workers=n_worker, pin_memory=True, collate_fn=collate_fn)
+                                      num_workers=n_worker, pin_memory=True, collate_fn=collate_fn, persistent_workers=True)
         dataloader_val = DataLoader(dataset_val, batch_size=batch_size, shuffle=True,  # shuffle since eval on only partial data
-                                    num_workers=n_worker, pin_memory=True, collate_fn=collate_fn)
+                                    num_workers=n_worker, pin_memory=True, collate_fn=collate_fn, persistent_workers=True)
         print(f"train dataset: {len(dataset_train)} samples, {len(dataloader_train)} batches")
         print(f"val dataset: {len(dataset_val)} samples, {len(dataloader_val)} batches")
     case _:
@@ -244,7 +246,9 @@ match model_name:
             lambda_coord=lambda_coord,
             lambda_noobj=lambda_noobj,
             prob_thresh=prob_thresh,
-            iou_thresh=iou_thresh)  # start with model_args from command line
+            iou_thresh=iou_thresh,
+            iou_type=iou_type,
+            rescore=rescore)  # start with model_args from command line
         if init_from == 'resume':
             # Force these config attributes to be equal otherwise we can't even resume training
             # the rest of the attributes (e.g. dropout) can stay as desired from command line

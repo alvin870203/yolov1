@@ -32,6 +32,8 @@ class Yolov1Config:
     lambda_noobj: float = 0.5
     prob_thresh: float = 0.001
     iou_thresh: float = 0.5
+    iou_type: str = 'default'  # 'default' or 'distance'
+    rescore: bool = False
 
 
 class Yolov1(nn.Module):
@@ -87,6 +89,31 @@ class Yolov1(nn.Module):
         return iou
 
 
+    def _batched_distance_box_iou(self, boxes1: Tensor, boxes2: Tensor, eps: float = 1e-7) -> Tensor:
+        """
+        Return distance intersection-over-union (Jaccard index) between a batch of two sets of boxes.
+        Both sets of boxes are expected to be in ``(x1, y1, x2, y2)`` format with ``0 <= x1 < x2`` and ``0 <= y1 < y2``.
+        Args:
+            boxes1 (Tensor[..., N, 4]): batch of first set of boxes
+            boxes2 (Tensor[..., M, 4]): batch of second set of boxes
+        Returns:
+            Tensor[..., N, M]: each NxM matrix containing the pairwise IoU values for every element in boxes1 & boxes2 pair
+        """
+        iou = self._batched_box_iou(boxes1, boxes2)
+        lti = torch.min(boxes1[..., None, :2], boxes2[..., None, :, :2])
+        rbi = torch.max(boxes1[..., None, 2:], boxes2[..., None, :, 2:])
+        whi = (rbi - lti).clamp(min=0)
+        diagonal_distance_squared = (whi[..., 0] ** 2) + (whi[..., 1] ** 2) + eps
+        # Centers of boxes
+        cx_1 = (boxes1[..., 0] + boxes1[..., 2]) / 2
+        cy_1 = (boxes1[..., 1] + boxes1[..., 3]) / 2
+        cx_2 = (boxes2[..., 0] + boxes2[..., 2]) / 2
+        cy_2 = (boxes2[..., 1] + boxes2[..., 3]) / 2
+        # Distance between boxes' centers squared
+        centers_distance_squared = ((cx_1[..., None] - cx_2[..., None, :]) ** 2) + ((cy_1[..., None] - cy_2[..., None, :]) ** 2)
+        return iou - (centers_distance_squared / diagonal_distance_squared)
+
+
     def _compute_loss(self, logits: Tensor, targets: Tensor) -> Tensor:
         """
         Args:
@@ -128,14 +155,20 @@ class Yolov1(nn.Module):
                 obj_coord_targets[:, 1] / self.config.n_grid_h - torch.pow(obj_coord_targets[:, 3], 2) / 2,
                 obj_coord_targets[:, 0] / self.config.n_grid_w + torch.pow(obj_coord_targets[:, 2], 2) / 2,
                 obj_coord_targets[:, 1] / self.config.n_grid_h + torch.pow(obj_coord_targets[:, 3], 2) / 2], dim=-1).unsqueeze(-2)
-            match_iou_matrix = self._batched_box_iou(obj_x1y1x2y2_logits, obj_x1y1x2y2_targets)
+            if self.config.iou_type == 'default':
+                match_iou_matrix = self._batched_box_iou(obj_x1y1x2y2_logits, obj_x1y1x2y2_targets)
+            elif self.config.iou_type == 'distance':
+                match_iou_matrix = self._batched_distance_box_iou(obj_x1y1x2y2_logits, obj_x1y1x2y2_targets)
             sorted_iou, sorted_idx = match_iou_matrix.sort(dim=-2, descending=True)
             matched_idx = sorted_idx[:, 0]
             unmatched_idx = sorted_idx[:, 1:].squeeze(-1)
             # FUTURE: many ways to improve as shown in the https://github.com/pjreddie/darknet/blob/master/src/detection_layer.c#L50
             # Compute responsible object confidence loss
             matched_conf_logits = torch.take_along_dim(obj_conf_logits, matched_idx, dim=-1)
-            loss += F.mse_loss(matched_conf_logits, torch.ones_like(matched_conf_logits), reduction='sum')
+            if self.config.rescore:
+                loss += F.mse_loss(matched_conf_logits, sorted_iou[:, 0], reduction='sum')
+            else:
+                loss += F.mse_loss(matched_conf_logits, torch.ones_like(matched_conf_logits), reduction='sum')
             # Compute no-responsible object confidence loss
             unmatched_conf_logits = torch.take_along_dim(obj_conf_logits, unmatched_idx, dim=-1)
             loss += F.mse_loss(unmatched_conf_logits, torch.zeros_like(unmatched_conf_logits), reduction='sum')
