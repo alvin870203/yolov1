@@ -53,10 +53,11 @@ model_name = 'yolov1'
 n_bbox_per_cell = 2  # B in the paper
 n_grid_h = 7  # S in the paper
 n_grid_w = 7  # S in the paper
+reduce_head_stride = False  # only stride 1 in the head, as apposed to stride 2 in the paper
 # Loss related
 lambda_coord = 5.0
 lambda_noobj = 0.5
-iou_type = 'default'  # 'default' or 'distance'
+match_iou_type = 'default'  # 'default' or 'distance'
 rescore = False  # whether to use predicted iou as ground truth for the predicted conf
 # Train related
 gradient_accumulation_steps = 1  # used to simulate larger batch sizes
@@ -221,7 +222,7 @@ if init_from == 'scratch':
 elif init_from == 'resume':
     print(f"Resuming training {model_name} from {from_ckpt}")
     # Resume training from a checkpoint
-    checkpoint = torch.load(from_ckpt, map_location=device)
+    checkpoint = torch.load(from_ckpt, map_location='cpu')  # load to CPU first to avoid GPU OOM
     torch.set_rng_state(checkpoint['rng_state'].to('cpu'))
     checkpoint_model_args = checkpoint['model_args']
     assert model_name == checkpoint['config']['model_name'], "model_name mismatch"
@@ -229,7 +230,7 @@ elif init_from == 'resume':
 elif init_from == 'backbone':
     print(f"Initializing a {model_name} model with pretrained backbone weights: {from_ckpt}")
     # Init a new model with pretrained backbone weights
-    checkpoint = torch.load(from_ckpt, map_location=device)
+    checkpoint = torch.load(from_ckpt, map_location='cpu')
 else:
     pass  # FUTURE: init from pretrained
 
@@ -247,12 +248,13 @@ match model_name:
             lambda_noobj=lambda_noobj,
             prob_thresh=prob_thresh,
             iou_thresh=iou_thresh,
-            iou_type=iou_type,
-            rescore=rescore)  # start with model_args from command line
+            match_iou_type=match_iou_type,
+            rescore=rescore,
+            reduce_head_stride=reduce_head_stride)  # start with model_args from command line
         if init_from == 'resume':
             # Force these config attributes to be equal otherwise we can't even resume training
             # the rest of the attributes (e.g. dropout) can stay as desired from command line
-            for k in ['img_h', 'img_w', 'n_class', 'n_bbox_per_cell', 'n_grid_h', 'n_grid_w']:
+            for k in ['img_h', 'img_w', 'n_class', 'n_bbox_per_cell', 'n_grid_h', 'n_grid_w', 'reduce_head_stride']:
                 model_args[k] = checkpoint_model_args[k]
         # Create the model
         model_config = Yolov1Config(**model_args)
@@ -388,7 +390,7 @@ while True:
             if iter_num > 0:
                 tqdm.write(f"saving checkpoint to {out_dir}")
                 torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))  # TODO: save top k checkpoints
-            if is_last_eval:
+            if is_last_eval and not always_save_checkpoint:
                 tqdm.write(f"saving last checkpoint to {out_dir}")
                 torch.save(checkpoint, os.path.join(out_dir, 'ckpt_last.pt'))
 

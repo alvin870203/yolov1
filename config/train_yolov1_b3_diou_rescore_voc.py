@@ -34,7 +34,7 @@ n_grid_w = 7
 # Loss related
 lambda_coord = 5.0
 lambda_noobj = 0.5
-iou_type = 'distance'
+match_iou_type = 'distance'
 rescore = True
 
 # Train related

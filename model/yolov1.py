@@ -32,7 +32,7 @@ class Yolov1Config:
     lambda_noobj: float = 0.5
     prob_thresh: float = 0.001
     iou_thresh: float = 0.5
-    iou_type: str = 'default'  # 'default' or 'distance'
+    match_iou_type: str = 'default'  # 'default' or 'distance'
     rescore: bool = False
     reduce_head_stride: bool = False  # only stride 1 in the head, as apposed to stride 2 in the paper
 
@@ -52,6 +52,7 @@ class Yolov1(nn.Module):
             ExtractionConv2d(1024, 1024, kernel_size=3, stride=1, padding=1),
             nn.Flatten(),
             nn.Linear((1024 * 7 * 7) if not self.config.reduce_head_stride else (1024 * 14 * 14), 4096),  # hardcoded in_features is the reason for required 448x448 input image size
+            nn.LeakyReLU(0.1, inplace=True),
             nn.Dropout(0.5),
             nn.Linear(4096, config.n_grid_h * config.n_grid_w * (config.n_class + config.n_bbox_per_cell * 5))
         )
@@ -156,9 +157,10 @@ class Yolov1(nn.Module):
                 obj_coord_targets[:, 1] / self.config.n_grid_h - torch.pow(obj_coord_targets[:, 3], 2) / 2,
                 obj_coord_targets[:, 0] / self.config.n_grid_w + torch.pow(obj_coord_targets[:, 2], 2) / 2,
                 obj_coord_targets[:, 1] / self.config.n_grid_h + torch.pow(obj_coord_targets[:, 3], 2) / 2], dim=-1).unsqueeze(-2)
-            if self.config.iou_type == 'default':
+            if self.config.match_iou_type == 'default':
                 match_iou_matrix = self._batched_box_iou(obj_x1y1x2y2_logits, obj_x1y1x2y2_targets)
-            elif self.config.iou_type == 'distance':
+                default_iou_matrix = match_iou_matrix
+            elif self.config.match_iou_type == 'distance':
                 match_iou_matrix, default_iou_matrix = self._batched_distance_box_iou(obj_x1y1x2y2_logits, obj_x1y1x2y2_targets)
             sorted_iou, sorted_idx = match_iou_matrix.sort(dim=-2, descending=True)
             matched_idx = sorted_idx[:, 0]
@@ -167,8 +169,8 @@ class Yolov1(nn.Module):
             # Compute responsible object confidence loss
             matched_conf_logits = torch.take_along_dim(obj_conf_logits, matched_idx, dim=-1)
             if self.config.rescore:
-                default_iou = torch.take_along_dim(default_iou_matrix, matched_idx.unsqueeze(-1), dim=-2)
-                loss += F.mse_loss(matched_conf_logits, default_iou[:, 0], reduction='sum')
+                matched_conf_targets = torch.take_along_dim(default_iou_matrix, matched_idx.unsqueeze(-1), dim=-2)[:, 0]
+                loss += F.mse_loss(matched_conf_logits, matched_conf_targets, reduction='sum')
             else:
                 loss += F.mse_loss(matched_conf_logits, torch.ones_like(matched_conf_logits), reduction='sum')
             # Compute no-responsible object confidence loss
