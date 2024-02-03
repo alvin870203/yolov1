@@ -34,6 +34,7 @@ class Yolov1Config:
     iou_thresh: float = 0.5
     iou_type: str = 'default'  # 'default' or 'distance'
     rescore: bool = False
+    reduce_head_stride: bool = False  # only stride 1 in the head, as apposed to stride 2 in the paper
 
 
 class Yolov1(nn.Module):
@@ -46,11 +47,11 @@ class Yolov1(nn.Module):
 
         self.head = nn.Sequential(
             ExtractionConv2d(1024, 1024, kernel_size=3, stride=1, padding=1),
-            ExtractionConv2d(1024, 1024, kernel_size=3, stride=2, padding=1),
+            ExtractionConv2d(1024, 1024, kernel_size=3, stride=2 if not self.config.reduce_head_stride else 1, padding=1),
             ExtractionConv2d(1024, 1024, kernel_size=3, stride=1, padding=1),
             ExtractionConv2d(1024, 1024, kernel_size=3, stride=1, padding=1),
             nn.Flatten(),
-            nn.Linear(1024 * 7 * 7, 4096),  # hardcoded in_features is the reason for required 448x448 input image size
+            nn.Linear((1024 * 7 * 7) if not self.config.reduce_head_stride else (1024 * 14 * 14), 4096),  # hardcoded in_features is the reason for required 448x448 input image size
             nn.Dropout(0.5),
             nn.Linear(4096, config.n_grid_h * config.n_grid_w * (config.n_class + config.n_bbox_per_cell * 5))
         )
@@ -111,7 +112,7 @@ class Yolov1(nn.Module):
         cy_2 = (boxes2[..., 1] + boxes2[..., 3]) / 2
         # Distance between boxes' centers squared
         centers_distance_squared = ((cx_1[..., None] - cx_2[..., None, :]) ** 2) + ((cy_1[..., None] - cy_2[..., None, :]) ** 2)
-        return iou - (centers_distance_squared / diagonal_distance_squared)
+        return iou - (centers_distance_squared / diagonal_distance_squared), iou
 
 
     def _compute_loss(self, logits: Tensor, targets: Tensor) -> Tensor:
@@ -158,7 +159,7 @@ class Yolov1(nn.Module):
             if self.config.iou_type == 'default':
                 match_iou_matrix = self._batched_box_iou(obj_x1y1x2y2_logits, obj_x1y1x2y2_targets)
             elif self.config.iou_type == 'distance':
-                match_iou_matrix = self._batched_distance_box_iou(obj_x1y1x2y2_logits, obj_x1y1x2y2_targets)
+                match_iou_matrix, default_iou_matrix = self._batched_distance_box_iou(obj_x1y1x2y2_logits, obj_x1y1x2y2_targets)
             sorted_iou, sorted_idx = match_iou_matrix.sort(dim=-2, descending=True)
             matched_idx = sorted_idx[:, 0]
             unmatched_idx = sorted_idx[:, 1:].squeeze(-1)
@@ -166,7 +167,8 @@ class Yolov1(nn.Module):
             # Compute responsible object confidence loss
             matched_conf_logits = torch.take_along_dim(obj_conf_logits, matched_idx, dim=-1)
             if self.config.rescore:
-                loss += F.mse_loss(matched_conf_logits, sorted_iou[:, 0], reduction='sum')
+                default_iou = torch.take_along_dim(default_iou_matrix, matched_idx, dim=-1)
+                loss += F.mse_loss(matched_conf_logits, default_iou[:, 0], reduction='sum')
             else:
                 loss += F.mse_loss(matched_conf_logits, torch.ones_like(matched_conf_logits), reduction='sum')
             # Compute no-responsible object confidence loss
