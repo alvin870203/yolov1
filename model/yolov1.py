@@ -167,7 +167,7 @@ class Yolov1(nn.Module):
             # Compute responsible object confidence loss
             matched_conf_logits = torch.take_along_dim(obj_conf_logits, matched_idx, dim=-1)
             if self.config.rescore:
-                default_iou = torch.take_along_dim(default_iou_matrix, matched_idx, dim=-1)
+                default_iou = torch.take_along_dim(default_iou_matrix, matched_idx.unsqueeze(-1), dim=-2)
                 loss += F.mse_loss(matched_conf_logits, default_iou[:, 0], reduction='sum')
             else:
                 loss += F.mse_loss(matched_conf_logits, torch.ones_like(matched_conf_logits), reduction='sum')
