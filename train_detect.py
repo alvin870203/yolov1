@@ -310,10 +310,10 @@ def estimate_loss():
     out_losses, out_map50 = {}, {}
     model.eval()
     for split in ['train', 'val']:
-        losses = torch.zeros(eval_iters)
+        losses = torch.zeros(eval_iters * gradient_accumulation_steps)
         metric = MeanAveragePrecision(iou_type='bbox')
         metric.warn_on_many_detections = False
-        for k in range(eval_iters):
+        for k in range(eval_iters * gradient_accumulation_steps):
             X, Y, Y_supp = BatchGetter.get_batch(split)
             with ctx:
                 logits, loss = model(X, Y)

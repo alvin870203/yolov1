@@ -4,8 +4,8 @@ import time
 
 # Task related
 task_name = 'detect'
-init_from = 'resume'
-from_ckpt = 'out/yolov1_voc/20240124-063425/ckpt_last.pt'
+init_from = 'backbone'
+from_ckpt = 'saved/extraction_imagenet2012/20240128-110502/ckpt.pt'
 
 # Data related
 dataset_name = 'voc'
@@ -27,21 +27,25 @@ imgs_std = [1.0, 1.0, 1.0]  # no normalization for yolo
 
 # Model related
 model_name = 'yolov1'
-n_bbox_per_cell = 2
-n_grid_h = 7
-n_grid_w = 7
+n_bbox_per_cell = 3  # improved from 2 to 3
+n_grid_h = 14  # improved from 7 to 14
+n_grid_w = 14  # improved from 7 to 14
+reduce_head_stride = True  # improved from False to True
 
 # Loss related
 lambda_coord = 5.0
 lambda_noobj = 0.5
+match_iou_type = 'distance'  # improved from 'default' to 'distance'
+#rescore = True  # TODO: not sure if improved from False to True is harmful
 
 # Train related
 # the number of examples per iter:
-# 128 batch_size * 1 grad_accum = 128 imgs/iter
+# 8 batch_size * 16 grad_accum = 128 imgs/iter
 # voc train set has 16,551 imgs, so 1 epoch ~= 129 iters
-gradient_accumulation_steps = 1
-batch_size = 128  # filled up the gpu memory on my machine
-max_iters = 180000  # finish in 1 day on my machine
+gradient_accumulation_steps = 16  # make 128 imgs/iter
+batch_size = 8  # reduced because improved reduce_head_stride=True increases model size a lot
+max_iters = 120000  # 20,000 iters * 8 batch_size * 16 grad_accum = 2,560,000 imgs, same as the darknet implementation 40,000 iters * 64 batch_size = 2,560,000 imgs
+                    # additional 100,000 to finish in 1 day on my machine
 
 # Optimizer related
 optimizer_type = 'adamw'
@@ -61,7 +65,7 @@ use_fused = True  # somehow use_fused=True is incompatible to compile=True in th
 eval_interval = 650  # keep frequent if we'll overfit, but don't too frequent to get stable results
 eval_iters = 16  # use more iterations to get good estimate
 prob_thresh = 0.001
-iou_thresh = 0.5
+iou_thresh = 0.49  # possibly better for improved S=14
 
 # Log related
 timestamp = time.strftime('%Y%m%d-%H%M%S', time.localtime())
