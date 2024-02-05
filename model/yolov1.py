@@ -91,7 +91,7 @@ class Yolov1(nn.Module):
         return iou
 
 
-    def _batched_distance_box_iou(self, boxes1: Tensor, boxes2: Tensor, eps: float = 1e-7) -> Tensor:
+    def _batched_distance_box_iou(self, boxes1: Tensor, boxes2: Tensor, eps: float = 1e-16) -> Tensor:
         """
         Return distance intersection-over-union (Jaccard index) between a batch of two sets of boxes.
         Both sets of boxes are expected to be in ``(x1, y1, x2, y2)`` format with ``0 <= x1 < x2`` and ``0 <= y1 < y2``.
