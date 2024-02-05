@@ -28,14 +28,14 @@ imgs_std = [1.0, 1.0, 1.0]  # no normalization for yolo
 # Model related
 model_name = 'yolov1'
 n_bbox_per_cell = 3
-n_grid_h = 7
-n_grid_w = 7
+n_grid_h = 14  # improve darknet's 7 to 14
+n_grid_w = 14  # improve darknet's 7 to 14
 
 # Loss related
 lambda_coord = 5.0
 lambda_noobj = 0.5
 match_iou_type = 'distance'
-rescore = True
+rescore = False  # disable darknet's rescore since it's harmful
 
 # Train related
 # the number of examples per iter:
@@ -47,8 +47,8 @@ max_iters = 120000  # 20,000 iters * 128 batch_size = 2,560,000 imgs, same as th
                     # additional 100,000 to finish in 1 day on my machine
 
 # Optimizer related
-optimizer_type = 'sgd'
-learning_rate = 1.25e-3  # same as the darknet implementation
+optimizer_type = 'adamw'
+learning_rate = 1e-4  # smaller than the darknet implementation as adamw is used
 weight_decay = 5e-4
 beta1 = 0.9
 beta2 = 0.999
@@ -56,7 +56,7 @@ grad_clip = 0.0  # clip gradients at this value, or disable if == 0.0
 decay_lr = True  # whether to decay the learning rate
 warmup_iters = 650  # warmup 5 epochs
 lr_decay_iters = 120000  # should be ~= max_iters
-min_lr = 5e-5  # minimum learning rate, should be ~= learning_rate/10, but set to the same as the darknet implementation
+min_lr = 1e-5  # minimum learning rate, should be ~= learning_rate/10
 use_fused = True  # somehow use_fused=True is incompatible to compile=True in this model
 
 # Eval related
