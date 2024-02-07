@@ -33,7 +33,7 @@ n_grid_w = 14  # improve darknet's 7 to 14
 
 # Loss related
 lambda_coord = 5.0
-lambda_noobj = 0.5
+lambda_noobj = 0.125  # TODO: see if decreasing lambda_noobj is beneficial when S is improved from 7 to 14
 match_iou_type = 'distance'
 rescore = False  # disable darknet's rescore since it's harmful
 

@@ -30,26 +30,27 @@ model_name = 'yolov1'
 n_bbox_per_cell = 3  # improved from 2 to 3
 n_grid_h = 14  # improved from 7 to 14
 n_grid_w = 14  # improved from 7 to 14
-reduce_head_stride = True  # improved from False to True
+reduce_head_stride = False  # no benefit
+sigmoid_conf = True  # TODO: see if this is beneficial
 
 # Loss related
 lambda_coord = 5.0
-lambda_noobj = 0.5
+lambda_noobj = 0.125  # TODO: see if decreasing lambda_noobj is beneficial when S is improved from 7 to 14
 match_iou_type = 'distance'  # improved from 'default' to 'distance'
-#rescore = True  # TODO: not sure if improved from False to True is harmful
+rescore = False  # disable darknet's rescore since it's harmful
 
 # Train related
 # the number of examples per iter:
-# 8 batch_size * 16 grad_accum = 128 imgs/iter
+# 128 batch_size * 1 grad_accum = 128 imgs/iter
 # voc train set has 16,551 imgs, so 1 epoch ~= 129 iters
-gradient_accumulation_steps = 16  # make 128 imgs/iter
-batch_size = 8  # reduced because improved reduce_head_stride=True increases model size a lot
-max_iters = 120000  # 20,000 iters * 8 batch_size * 16 grad_accum = 2,560,000 imgs, same as the darknet implementation 40,000 iters * 64 batch_size = 2,560,000 imgs
+gradient_accumulation_steps = 1
+batch_size = 128  # filled up the gpu memory on my machine
+max_iters = 120000  # 20,000 iters * 128 batch_size = 2,560,000 imgs, same as the darknet implementation 40,000 iters * 64 batch_size = 2,560,000 imgs
                     # additional 100,000 to finish in 1 day on my machine
 
 # Optimizer related
 optimizer_type = 'adamw'
-learning_rate = 1e-4  # a bit smaller than the darknet implementation to prevent divergence at the beginning
+learning_rate = 1e-4  # smaller than the darknet implementation as adamw is used
 weight_decay = 5e-4
 beta1 = 0.9
 beta2 = 0.999
@@ -57,7 +58,7 @@ grad_clip = 0.0  # clip gradients at this value, or disable if == 0.0
 decay_lr = True  # whether to decay the learning rate
 warmup_iters = 650  # warmup 5 epochs
 lr_decay_iters = 120000  # should be ~= max_iters
-min_lr = 1e-5  # minimum learning rate, should be ~= learning_rate/10, but set to the same as the darknet implementation
+min_lr = 1e-5  # minimum learning rate, should be ~= learning_rate/10
 use_fused = True  # somehow use_fused=True is incompatible to compile=True in this model
 
 # Eval related
