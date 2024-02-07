@@ -54,11 +54,12 @@ n_bbox_per_cell = 2  # B in the paper
 n_grid_h = 7  # S in the paper
 n_grid_w = 7  # S in the paper
 reduce_head_stride = False  # only stride 1 in the head, as apposed to stride 2 in the paper
+sigmoid_conf = False  # sigmoid the confidence score in the head
 # Loss related
 lambda_coord = 5.0
 lambda_noobj = 0.5
 match_iou_type = 'default'  # 'default' or 'distance'
-rescore = False  # whether to use predicted iou as ground truth for the predicted conf
+rescore = False  # whether to take the predicted iou as the target for the confidence score instead of 1.0
 # Train related
 gradient_accumulation_steps = 1  # used to simulate larger batch sizes
 batch_size = 2  # if gradient_accumulation_steps > 1, this is the micro-batch size
@@ -250,7 +251,8 @@ match model_name:
             iou_thresh=iou_thresh,
             match_iou_type=match_iou_type,
             rescore=rescore,
-            reduce_head_stride=reduce_head_stride)  # start with model_args from command line
+            reduce_head_stride=reduce_head_stride,
+            sigmoid_conf=sigmoid_conf)  # start with model_args from command line
         if init_from == 'resume':
             # Force these config attributes to be equal otherwise we can't even resume training
             # the rest of the attributes (e.g. dropout) can stay as desired from command line

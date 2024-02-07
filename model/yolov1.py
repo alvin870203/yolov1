@@ -33,8 +33,9 @@ class Yolov1Config:
     prob_thresh: float = 0.001
     iou_thresh: float = 0.5
     match_iou_type: str = 'default'  # 'default' or 'distance'
-    rescore: bool = False
+    rescore: bool = False  # whether to take the predicted iou as the target for the confidence score instead of 1.0
     reduce_head_stride: bool = False  # only stride 1 in the head, as apposed to stride 2 in the paper
+    sigmoid_conf: bool = False  # sigmoid the confidence score in the head
 
 
 class Yolov1(nn.Module):
@@ -175,7 +176,7 @@ class Yolov1(nn.Module):
                 loss += F.mse_loss(matched_conf_logits, torch.ones_like(matched_conf_logits), reduction='sum')
             # Compute no-responsible object confidence loss
             unmatched_conf_logits = torch.take_along_dim(obj_conf_logits, unmatched_idx, dim=-1)
-            loss += F.mse_loss(unmatched_conf_logits, torch.zeros_like(unmatched_conf_logits), reduction='sum')
+            loss += self.config.lambda_noobj * F.mse_loss(unmatched_conf_logits, torch.zeros_like(unmatched_conf_logits), reduction='sum')
             # Compute responsible object bbox x,y,sqrt(w),sqrt(h) loss
             matched_coord_logits = torch.take_along_dim(obj_coord_logits, matched_idx.unsqueeze(-1), dim=-2).squeeze(-2)
             loss += self.config.lambda_coord * F.mse_loss(matched_coord_logits, obj_coord_targets, reduction='sum')
@@ -217,6 +218,8 @@ class Yolov1(nn.Module):
         logits = logits.view(-1, self.config.n_grid_h, self.config.n_grid_w,
                              self.config.n_class + self.config.n_bbox_per_cell * 5)
         # N x 7 x 7 x 30
+        if self.config.sigmoid_conf:
+            logits[..., self.config.n_class::5] = torch.sigmoid(logits[..., self.config.n_class::5])
 
         if targets is not None:
             # If we are given some desired targets also calculate the loss
