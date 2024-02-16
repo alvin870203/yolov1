@@ -28,8 +28,10 @@ class Yolov1Config:
     n_bbox_per_cell: int = 2  # B in the paper
     n_grid_h: int = 7  # S in the paper
     n_grid_w: int = 7  # S in the paper
-    lambda_coord: float = 5.0
     lambda_noobj: float = 0.5
+    lambda_obj: float = 1.0
+    lambda_class: float = 1.0
+    lambda_coord: float = 5.0
     prob_thresh: float = 0.001
     iou_thresh: float = 0.5
     match_iou_type: str = 'default'  # 'default' or 'distance'
@@ -126,15 +128,17 @@ class Yolov1(nn.Module):
             loss (Tensor): size(,)
         """
         loss = torch.tensor(0.0, dtype=logits.dtype, device=logits.device)
+        loss_noobj = torch.tensor(0.0, dtype=logits.dtype, device=logits.device)
+        loss_obj = torch.tensor(0.0, dtype=logits.dtype, device=logits.device)
+        loss_class = torch.tensor(0.0, dtype=logits.dtype, device=logits.device)
+        loss_coord = torch.tensor(0.0, dtype=logits.dtype, device=logits.device)
         for logits_per_img, targets_per_img in zip(logits, targets):
             # Compute no-object confidence loss
             noobj_idx = (targets_per_img[:, :, 0] == 0.0)
             if noobj_idx.numel() != 0:
                 noobj_bbox_logits = logits_per_img[:, :, self.config.n_class :][noobj_idx]
                 noobj_conf_logits = noobj_bbox_logits.view(noobj_idx.sum() * self.config.n_bbox_per_cell, 5)[:, 0]
-                loss += (self.config.lambda_noobj * F.mse_loss(noobj_conf_logits,
-                                                               torch.zeros_like(noobj_conf_logits),
-                                                               reduction='sum'))
+                loss_noobj += F.mse_loss(noobj_conf_logits, torch.zeros_like(noobj_conf_logits), reduction='sum')
             # Compute object classification loss
             obj_idx = (targets_per_img[:, :, 0] == 1.0)
             if obj_idx.numel() == 0:
@@ -142,7 +146,7 @@ class Yolov1(nn.Module):
             obj_class_logits = logits_per_img[:, :, : self.config.n_class][obj_idx]
             obj_class_targets = targets_per_img[:, :, 1][obj_idx].to(torch.int64)
             obj_class_targets_one_hot = F.one_hot(obj_class_targets, num_classes=self.config.n_class)
-            loss += F.mse_loss(obj_class_logits, obj_class_targets_one_hot.to(logits.dtype), reduction='sum')  # FUTURE: try BCELoss for improvement
+            loss_class += F.mse_loss(obj_class_logits, obj_class_targets_one_hot.to(logits.dtype), reduction='sum')  # FUTURE: try BCELoss for improvement
             # Compute responsible grid cell
             obj_coord_targets = targets_per_img[:, :, 2 :][obj_idx]
             obj_bbox_logits = logits_per_img[:, :, self.config.n_class :][obj_idx]
@@ -171,17 +175,23 @@ class Yolov1(nn.Module):
             matched_conf_logits = torch.take_along_dim(obj_conf_logits, matched_idx, dim=-1)
             if self.config.rescore:
                 matched_conf_targets = torch.take_along_dim(default_iou_matrix, matched_idx.unsqueeze(-1), dim=-2)[:, 0]
-                loss += F.mse_loss(matched_conf_logits, matched_conf_targets, reduction='sum')
+                loss_obj += F.mse_loss(matched_conf_logits, matched_conf_targets, reduction='sum')
             else:
-                loss += F.mse_loss(matched_conf_logits, torch.ones_like(matched_conf_logits), reduction='sum')
+                loss_obj += F.mse_loss(matched_conf_logits, torch.ones_like(matched_conf_logits), reduction='sum')
             # Compute no-responsible object confidence loss
             unmatched_conf_logits = torch.take_along_dim(obj_conf_logits, unmatched_idx, dim=-1)
-            loss += self.config.lambda_noobj * F.mse_loss(unmatched_conf_logits, torch.zeros_like(unmatched_conf_logits), reduction='sum')
+            loss_noobj += F.mse_loss(unmatched_conf_logits, torch.zeros_like(unmatched_conf_logits), reduction='sum')
             # Compute responsible object bbox x,y,sqrt(w),sqrt(h) loss
             matched_coord_logits = torch.take_along_dim(obj_coord_logits, matched_idx.unsqueeze(-1), dim=-2).squeeze(-2)
-            loss += self.config.lambda_coord * F.mse_loss(matched_coord_logits, obj_coord_targets, reduction='sum')
+            loss_coord += F.mse_loss(matched_coord_logits, obj_coord_targets, reduction='sum')
+        loss_noobj /= logits.shape[0]
+        loss_obj /= logits.shape[0]
+        loss_class /= logits.shape[0]
+        loss_coord /= logits.shape[0]
+        loss += (self.config.lambda_noobj * loss_noobj + self.config.lambda_obj * loss_obj +
+                 self.config.lambda_class * loss_class + self.config.lambda_coord * loss_coord)
 
-        return loss / logits.shape[0]
+        return loss, loss_noobj, loss_obj, loss_class, loss_coord
 
 
     def forward(self, imgs: Tensor, targets: Optional[Tensor] = None) -> Tuple[Tensor, Optional[Tensor]]:
@@ -223,11 +233,11 @@ class Yolov1(nn.Module):
 
         if targets is not None:
             # If we are given some desired targets also calculate the loss
-            loss = self._compute_loss(logits, targets)
+            loss, loss_noobj, loss_obj, loss_class, loss_coord = self._compute_loss(logits, targets)
         else:
-            loss = None
+            loss, loss_noobj, loss_obj, loss_class, loss_coord = None, None, None, None, None
 
-        return logits, loss
+        return logits, loss, loss_noobj, loss_obj, loss_class, loss_coord
 
 
     @classmethod
@@ -353,7 +363,7 @@ if __name__ == '__main__':
         targets.extend([random.randint(0, 1), random.randint(0, config.n_class - 1),
                         random.uniform(0, 1), random.uniform(0, 1), random.uniform(0, 1), random.uniform(0, 1)])
     targets = torch.tensor(targets, dtype=torch.float32).view(2, config.n_grid_h, config.n_grid_w, 1 + 1 + 4)
-    logits, loss = model(imgs, targets)
+    logits, loss, _, _, _, _ = model(imgs, targets)
     print(f"logits shape: {logits.shape}")
     if loss is not None:
         print(f"loss shape: {loss.shape}")

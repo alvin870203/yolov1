@@ -46,7 +46,7 @@ max_iters = 120000  # 20,000 iters * 128 batch_size = 2,560,000 imgs, same as th
 
 # Optimizer related
 optimizer_type = 'adamw'
-learning_rate = 1e-4  # a bit smaller than the darknet implementation to prevent divergence at the beginning
+learning_rate = 1e-4  # smaller than the darknet implementation as adamw is used
 weight_decay = 5e-4
 beta1 = 0.9
 beta2 = 0.999
@@ -54,7 +54,7 @@ grad_clip = 0.0  # clip gradients at this value, or disable if == 0.0
 decay_lr = True  # whether to decay the learning rate
 warmup_iters = 650  # warmup 5 epochs
 lr_decay_iters = 120000  # should be ~= max_iters
-min_lr = 1e-5  # minimum learning rate, should be ~= learning_rate/10, but set to the same as the darknet implementation
+min_lr = 1e-5  # minimum learning rate, should be ~= learning_rate/10
 use_fused = True  # somehow use_fused=True is incompatible to compile=True in this model
 
 # Eval related

@@ -14,12 +14,12 @@ img_w = 448
 n_class = 20
 
 # Transform related
-scale_min = 0.44  # not very sure how to set this to have the same effect as the darknet implementation
-scale_max = 1.44  # not very sure how to set this to have the same effect as the darknet implementation
+scale_min = 0.3  # improved from 0.44 to 0.3 (default of torchvision)
+scale_max = 4  # improved from 1.44 to 4 (default of torchvision)
 aspect_min = 0.5  # default of torchvision
 aspect_max = 2.0  # default of torchvision
 brightness = 0.5  # not very sure how to set this to have the same effect as the darknet implementation
-contrast = 0.0  # not very sure how to set this to have the same effect as the darknet implementation
+contrast = 0.5  # improved from 0.0 to 0.5 (default of torchvision)
 saturation = 0.5  # not very sure how to set this to have the same effect as the darknet implementation
 hue = 0.1  # not very sure how to set this to have the same effect as the darknet implementation
 imgs_mean = [0.0, 0.0, 0.0]  # no normalization for yolo
@@ -27,16 +27,18 @@ imgs_std = [1.0, 1.0, 1.0]  # no normalization for yolo
 
 # Model related
 model_name = 'yolov1'
-n_bbox_per_cell = 3  # improved from 2 to 3
-n_grid_h = 14  # improved from 7 to 14
-n_grid_w = 14  # improved from 7 to 14
+n_bbox_per_cell = 3
+n_grid_h = 7
+n_grid_w = 7
 reduce_head_stride = False  # no benefit
-sigmoid_conf = True  # TODO: see if this is beneficial
+sigmoid_conf = False  # TODO: see if True is beneficial
 
 # Loss related
+lambda_noobj = 0.25  # improved from 0.5 to 0.25, make loss_obj have similar scale as paper
+lambda_obj = 1.0
+lambda_class = 1.0
 lambda_coord = 5.0
-lambda_noobj = 0.125  # TODO: see if decreasing lambda_noobj is beneficial when S is improved from 7 to 14
-match_iou_type = 'distance'  # improved from 'default' to 'distance'
+match_iou_type = 'distance'  # TODO: improved from 'default' to 'distance'
 rescore = False  # disable darknet's rescore since it's harmful
 
 # Train related
@@ -66,7 +68,7 @@ use_fused = True  # somehow use_fused=True is incompatible to compile=True in th
 eval_interval = 650  # keep frequent if we'll overfit, but don't too frequent to get stable results
 eval_iters = 16  # use more iterations to get good estimate
 prob_thresh = 0.001
-iou_thresh = 0.49  # possibly better for improved S=14
+iou_thresh = 0.5
 
 # Log related
 timestamp = time.strftime('%Y%m%d-%H%M%S', time.localtime())

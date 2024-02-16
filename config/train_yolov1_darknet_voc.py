@@ -28,12 +28,12 @@ imgs_std = [1.0, 1.0, 1.0]  # no normalization for yolo
 # Model related
 model_name = 'yolov1'
 n_bbox_per_cell = 3
-n_grid_h = 14  # improve darknet's 7 to 14
-n_grid_w = 14  # improve darknet's 7 to 14
+n_grid_h = 7
+n_grid_w = 7
 
 # Loss related
 lambda_coord = 5.0
-lambda_noobj = 0.125  # TODO: see if decreasing lambda_noobj is beneficial when S is improved from 7 to 14
+lambda_noobj = 0.5
 match_iou_type = 'distance'
 rescore = False  # disable darknet's rescore since it's harmful
 

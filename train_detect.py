@@ -56,8 +56,10 @@ n_grid_w = 7  # S in the paper
 reduce_head_stride = False  # only stride 1 in the head, as apposed to stride 2 in the paper
 sigmoid_conf = False  # sigmoid the confidence score in the head
 # Loss related
-lambda_coord = 5.0
 lambda_noobj = 0.5
+lambda_obj = 1.0
+lambda_class = 1.0
+lambda_coord = 5.0
 match_iou_type = 'default'  # 'default' or 'distance'
 rescore = False  # whether to take the predicted iou as the target for the confidence score instead of 1.0
 # Train related
@@ -156,9 +158,9 @@ match dataset_name:
 
         transforms_train = v2.Compose([
             v2.ToImage(),
-            v2.RandomZoomOut(fill={tv_tensors.Image: (0, 0, 0), "others": 0}, side_range=(1.0, scale_max)),
-            v2.RandomIoUCrop(min_scale=scale_min, max_scale=1.0, min_aspect_ratio=0.5, max_aspect_ratio=2.0),
             v2.ColorJitter(brightness=brightness, contrast=contrast, saturation=saturation, hue=hue),
+            v2.RandomZoomOut(fill={tv_tensors.Image: (0, 0, 0), "others": 0}, side_range=(1.0, scale_max)),
+            v2.RandomIoUCrop(min_scale=scale_min, max_scale=1.0, min_aspect_ratio=aspect_min, max_aspect_ratio=aspect_max),
             v2.RandomHorizontalFlip(p=0.5),
             v2.Resize(size=(img_h, img_w), antialias=True),
             v2.SanitizeBoundingBoxes(),
@@ -245,8 +247,10 @@ match model_name:
             n_bbox_per_cell=n_bbox_per_cell,
             n_grid_h=n_grid_h,
             n_grid_w=n_grid_w,
-            lambda_coord=lambda_coord,
             lambda_noobj=lambda_noobj,
+            lambda_obj=lambda_obj,
+            lambda_class=lambda_class,
+            lambda_coord=lambda_coord,
             prob_thresh=prob_thresh,
             iou_thresh=iou_thresh,
             match_iou_type=match_iou_type,
@@ -310,23 +314,36 @@ if compile:
 @torch.inference_mode()
 def estimate_loss():
     out_losses, out_map50 = {}, {}
+    out_losses_noobj, out_losses_obj, out_losses_class, out_losses_coord = {}, {}, {}, {}
     model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters * gradient_accumulation_steps)
+        losses_noobj = torch.zeros(eval_iters * gradient_accumulation_steps)
+        losses_obj = torch.zeros(eval_iters * gradient_accumulation_steps)
+        losses_class = torch.zeros(eval_iters * gradient_accumulation_steps)
+        losses_coord = torch.zeros(eval_iters * gradient_accumulation_steps)
         metric = MeanAveragePrecision(iou_type='bbox')
         metric.warn_on_many_detections = False
         for k in range(eval_iters * gradient_accumulation_steps):
             X, Y, Y_supp = BatchGetter.get_batch(split)
             with ctx:
-                logits, loss = model(X, Y)
+                logits, loss, loss_noobj, loss_obj, loss_class, loss_coord = model(X, Y)
             losses[k] = loss.item()
+            losses_noobj[k] = loss_noobj.item()
+            losses_obj[k] = loss_obj.item()
+            losses_class[k] = loss_class.item()
+            losses_coord[k] = loss_coord.item()
             preds_for_map, targets_for_map = model.postprocess_for_map(logits, Y_supp)
             metric.update(preds_for_map, targets_for_map)
         map50 = metric.compute()['map_50'].mul(100.0).item()
         out_losses[split] = losses.mean()
+        out_losses_noobj[split] = losses_noobj.mean()
+        out_losses_obj[split] = losses_obj.mean()
+        out_losses_class[split] = losses_class.mean()
+        out_losses_coord[split] = losses_coord.mean()
         out_map50[split] = map50
     model.train()
-    return out_losses, out_map50
+    return out_losses, out_losses_noobj, out_losses_obj, out_losses_class, out_losses_coord, out_map50
 
 
 # Learning rate decay scheduler (cosine with warmup)
@@ -365,14 +382,22 @@ while True:
 
     # Evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0:
-        losses, map50 = estimate_loss()
+        losses, losses_noobj, losses_obj, losses_class, losses_coord, map50 = estimate_loss()
         tqdm.write(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, val map50 {map50['val']:.4f}")
         if wandb_log:
             wandb.log({
                 "iter": iter_num,
                 "train/loss": losses['train'],
+                "train/loss_noobj": losses_noobj['train'],
+                "train/loss_obj": losses_obj['train'],
+                "train/loss_class": losses_class['train'],
+                "train/loss_coord": losses_coord['train'],
                 "train/map50": map50['train'],
                 "val/loss": losses['val'],
+                "val/loss_noobj": losses_noobj['val'],
+                "val/loss_obj": losses_obj['val'],
+                "val/loss_class": losses_class['val'],
+                "val/loss_coord": losses_coord['val'],
                 "val/map50": map50['val'],
                 "lr": lr
             })
@@ -403,7 +428,7 @@ while True:
     # and using the GradScaler if data type is float16
     for micro_step in range(gradient_accumulation_steps):
         with ctx:
-            logits, loss = model(X, Y)
+            logits, loss, _, _, _, _ = model(X, Y)
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
 
         # Immediately async prefetch next batch while model is doing the forward pass on the GPU
