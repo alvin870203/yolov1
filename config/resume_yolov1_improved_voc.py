@@ -4,8 +4,8 @@ import time
 
 # Task related
 task_name = 'detect'
-init_from = 'backbone'
-from_ckpt = 'saved/extraction_imagenet2012/20240128-110502/ckpt.pt'
+init_from = 'resume'
+from_ckpt = 'out/yolov1_voc/20240217-171927/ckpt.pt'
 
 # Data related
 dataset_name = 'voc'
@@ -31,7 +31,7 @@ n_bbox_per_cell = 3
 n_grid_h = 7
 n_grid_w = 7
 reduce_head_stride = False  # no benefit
-sigmoid_conf = True  # TODO: see if True is beneficial
+sigmoid_conf = True  # improved from False to True
 
 # Loss related
 lambda_noobj = 0.25  # improved from 0.5 to 0.25, make loss_obj have similar scale as paper
