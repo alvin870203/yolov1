@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, List, Optional, Tuple
 import random
 
+import numpy as np
 import torch
 from torch import Tensor
 import torch.nn as nn
@@ -33,7 +34,7 @@ class Yolov1Config:
     lambda_class: float = 1.0
     lambda_coord: float = 5.0
     prob_thresh: float = 0.001
-    iou_thresh: float = 0.5
+    nms_iou_thresh: float = 0.5
     match_iou_type: str = 'default'  # 'default' or 'distance'
     rescore: bool = False  # whether to take the predicted iou as the target for the confidence score instead of 1.0
     reduce_head_stride: bool = False  # only stride 1 in the head, as apposed to stride 2 in the paper
@@ -300,14 +301,14 @@ class Yolov1(nn.Module):
 
 
     @torch.inference_mode()
-    def postprocess_for_map(self, logits, Y_supp):
+    def postprocess_for_eval(self, logits, Y_supp):
         """
-        Postprocess the logits and the targets for mAP calculation.
+        Postprocess the logits and the targets for metrics calculation.
         """
         # Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         self.eval()
         device = logits.device
-        preds_for_map, targets_for_map = [], []
+        preds_for_eval, targets_for_eval = [], []
         for logits_per_img, y_supp in zip(logits, Y_supp):
             grid_y, grid_x, idx_class, idx_bbox = torch.meshgrid(torch.arange(self.config.n_grid_h, device=device),
                                                                  torch.arange(self.config.n_grid_w, device=device),
@@ -333,21 +334,21 @@ class Yolov1(nn.Module):
             h = (h ** 2) * self.config.img_h
             coord = torch.stack((cx, cy, w, h), dim=-1)
 
-            boxes_for_nms = clip_boxes_to_image(box_convert(coord, in_fmt='cxcywh', out_fmt='xyxy'),
+            boxes = clip_boxes_to_image(box_convert(coord, in_fmt='cxcywh', out_fmt='xyxy'),
                                                 size=(self.config.img_h, self.config.img_w))
-            scores_for_nms = prob
-            classes_for_nms = idx_class
+            scores = prob
+            classes = idx_class
 
-            boxes_for_nms, scores_for_nms = boxes_for_nms.to(torch.float32), scores_for_nms.to(torch.float32)
-            keep = batched_nms(boxes_for_nms, scores_for_nms, classes_for_nms, self.config.iou_thresh)  # don't work for BFloat16
+            boxes, scores = boxes.to(torch.float32), scores.to(torch.float32)
+            keep = batched_nms(boxes, scores, classes, self.config.nms_iou_thresh)  # don't work for BFloat16
 
-            boxes_for_map = boxes_for_nms[keep]
-            scores_for_map = scores_for_nms[keep]
-            classes_for_map = classes_for_nms[keep]
+            boxes = boxes[keep]
+            scores = scores[keep]
+            classes = classes[keep]
 
-            preds_for_map.append(dict(boxes=boxes_for_map, scores=scores_for_map, labels=classes_for_map))
-            targets_for_map.append(dict(boxes=y_supp['boxes'].to(device), labels=y_supp['labels'].to(device)))
-        return preds_for_map, targets_for_map
+            preds_for_eval.append(dict(boxes=boxes, scores=scores, labels=classes))
+            targets_for_eval.append(dict(boxes=y_supp['boxes'].to(device), labels=y_supp['labels'].to(device)))
+        return preds_for_eval, targets_for_eval
 
 
 if __name__ == '__main__':

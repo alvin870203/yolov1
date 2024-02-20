@@ -68,7 +68,7 @@ use_fused = True  # somehow use_fused=True is incompatible to compile=True in th
 eval_interval = 650  # keep frequent if we'll overfit, but don't too frequent to get stable results
 eval_iters = 16  # use more iterations to get good estimate
 prob_thresh = 0.001
-iou_thresh = 0.5
+nms_iou_thresh = 0.5
 
 # Log related
 timestamp = time.strftime('%Y%m%d-%H%M%S', time.localtime())

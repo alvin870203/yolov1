@@ -24,6 +24,8 @@ from torchvision.datasets import wrap_dataset_for_transforms_v2
 from tqdm import tqdm
 from torchmetrics.detection import MeanAveragePrecision
 
+from evaluator import DetEvaluator
+
 
 # -----------------------------------------------------------------------------
 # Default config values
@@ -82,7 +84,8 @@ use_fused = True  # whether to use fused optimizer kernel
 eval_interval = 5  # keep frequent if we'll overfit
 eval_iters = 2  # use more iterations to get good estimate
 prob_thresh = 0.001  # threshold for predicted class-specific confidence score (= obj_prob * class_prob)
-iou_thresh = 0.5  # for NMS
+nms_iou_thresh = 0.5  # for NMS
+use_torchmetrics = False  # whether to use cocoeval for detailed but slower metric computation
 # Log related
 timestamp = '00000000-000000'
 out_dir = f'out/yolov1_voc/{timestamp}'
@@ -252,7 +255,7 @@ match model_name:
             lambda_class=lambda_class,
             lambda_coord=lambda_coord,
             prob_thresh=prob_thresh,
-            iou_thresh=iou_thresh,
+            nms_iou_thresh=nms_iou_thresh,
             match_iou_type=match_iou_type,
             rescore=rescore,
             reduce_head_stride=reduce_head_stride,
@@ -322,8 +325,11 @@ def estimate_loss():
         losses_obj = torch.zeros(eval_iters * gradient_accumulation_steps)
         losses_class = torch.zeros(eval_iters * gradient_accumulation_steps)
         losses_coord = torch.zeros(eval_iters * gradient_accumulation_steps)
-        metric = MeanAveragePrecision(iou_type='bbox')
-        metric.warn_on_many_detections = False
+        if use_torchmetrics:
+            metric = MeanAveragePrecision(iou_type='bbox')
+            metric.warn_on_many_detections = False
+        else:
+            metric = DetEvaluator()
         for k in range(eval_iters * gradient_accumulation_steps):
             X, Y, Y_supp = BatchGetter.get_batch(split)
             with ctx:
@@ -333,9 +339,10 @@ def estimate_loss():
             losses_obj[k] = loss_obj.item()
             losses_class[k] = loss_class.item()
             losses_coord[k] = loss_coord.item()
-            preds_for_map, targets_for_map = model.postprocess_for_map(logits, Y_supp)
-            metric.update(preds_for_map, targets_for_map)
-        map50 = metric.compute()['map_50'].mul(100.0).item()
+            preds_for_eval, targets_for_eval = model.postprocess_for_eval(logits, Y_supp)
+            metric.update(preds_for_eval, targets_for_eval)
+        map50 = metric.compute()['map_50'] * 100
+        map50 = map50.item() if isinstance(map50, torch.Tensor) else map50
         out_losses[split] = losses.mean()
         out_losses_noobj[split] = losses_noobj.mean()
         out_losses_obj[split] = losses_obj.mean()
